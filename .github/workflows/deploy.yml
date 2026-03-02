@@ -1,0 +1,126 @@
+name: D-Ship Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      network:
+        description: 'Target network (devnet / testnet / mainnet)'
+        required: true
+        default: 'devnet'
+      dapp_id:
+        description: 'dApp ID from the D-Ship platform'
+        required: true
+      config:
+        description: 'dApp configuration (JSON string)'
+        required: false
+        default: '{}'
+      contract_path:
+        description: 'Path to the contract directory (e.g. contracts/shipment, contracts/parcel)'
+        required: true
+      behavior_tree:
+        description: 'Behavior tree configuration (JSON string)'
+        required: false
+        default: ''
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Rust (stable + wasm32)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-unknown-unknown
+          override: true
+
+      - name: Install mxpy
+        run: |
+          pip3 install multiversx-sdk-cli --quiet
+          mxpy --version
+
+      - name: Build smart contract
+        run: |
+          cd "${{ inputs.contract_path }}/meta"
+          cargo run build
+
+      - name: Resolve network settings
+        id: network
+        run: |
+          case "${{ inputs.network }}" in
+            mainnet)
+              echo "proxy=https://gateway.multiversx.com"    >> $GITHUB_OUTPUT
+              echo "chain=1"                                  >> $GITHUB_OUTPUT
+              ;;
+            testnet)
+              echo "proxy=https://testnet-gateway.multiversx.com" >> $GITHUB_OUTPUT
+              echo "chain=T"                                       >> $GITHUB_OUTPUT
+              ;;
+            *)
+              echo "proxy=https://devnet-gateway.multiversx.com" >> $GITHUB_OUTPUT
+              echo "chain=D"                                      >> $GITHUB_OUTPUT
+              ;;
+          esac
+
+      - name: Deploy smart contract to MultiversX
+        id: deploy
+        env:
+          MVX_PEM: ${{ secrets.MVX_DEPLOYER_PEM }}
+        run: |
+          if [ -z "$MVX_PEM" ]; then
+            echo "::error::Secret MVX_DEPLOYER_PEM is not set. Add it in repository secrets."
+            exit 1
+          fi
+
+          printf '%s' "$MVX_PEM" > /tmp/deployer.pem
+          chmod 600 /tmp/deployer.pem
+
+          WASM_FILE=$(find "${{ inputs.contract_path }}/output" target -name "*.wasm" 2>/dev/null | head -1)
+          if [ -z "$WASM_FILE" ]; then
+            echo "::error::No .wasm file found. Build may have failed. Check ${{ inputs.contract_path }}/output or target/"
+            exit 1
+          fi
+
+          # Deploy and capture output (mxpy auto-fetches nonce)
+          mxpy contract deploy \
+            --bytecode="$WASM_FILE" \
+            --pem=/tmp/deployer.pem \
+            --proxy="${{ steps.network.outputs.proxy }}" \
+            --chain="${{ steps.network.outputs.chain }}" \
+            --arguments "str:{}" \
+            --gas-limit=100000000 \
+            --send \
+            --outfile=/tmp/deploy-output.json
+
+          # Parse results
+          TX_HASH=$(python3 -c "import json; d=json.load(open('/tmp/deploy-output.json')); print(d.get('emittedTransactionHash',''))" 2>/dev/null || true)
+          CONTRACT_ADDR=$(python3 -c "import json; d=json.load(open('/tmp/deploy-output.json')); print(d.get('contractAddress',''))" 2>/dev/null || true)
+
+          echo "tx_hash=$TX_HASH"           >> $GITHUB_OUTPUT
+          echo "contract_address=$CONTRACT_ADDR" >> $GITHUB_OUTPUT
+
+          # Remove sensitive files
+          rm -f /tmp/deployer.pem /tmp/deploy-output.json
+
+          echo "Deployed contract: $CONTRACT_ADDR  (tx: $TX_HASH)"
+
+      - name: Write deployment result artifact
+        run: |
+          mkdir -p deployment-result
+          TX_HASH="${{ steps.deploy.outputs.tx_hash }}"
+          CONTRACT_ADDRESS="${{ steps.deploy.outputs.contract_address }}"
+          NETWORK="${{ inputs.network }}"
+          DAPP_ID="${{ inputs.dapp_id }}"
+          printf '{"tx_hash":"%s","contract_address":"%s","network":"%s","dapp_id":"%s"}\n' \
+            "$TX_HASH" "$CONTRACT_ADDRESS" "$NETWORK" "$DAPP_ID" > deployment-result/result.json
+          cat deployment-result/result.json
+
+      - name: Upload deployment result
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-result
+          path: deployment-result/result.json
+          retention-days: 30

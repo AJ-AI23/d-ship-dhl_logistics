@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+
+members = [
+    "crates/dship-common",
+    "crates/dship-validation-bt",
+    "contracts/shipment",
+    "contracts/shipment/meta",
+    "contracts/tracker",
+    "contracts/tracker/meta",
+    "contracts/serial",
+    "contracts/serial/meta",
+    "contracts/parcel",
+    "contracts/parcel/meta",
+]

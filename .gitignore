@@ -1,0 +1,26 @@
+# Rust (keep Cargo.lock for reproducible builds)
+/target/
+**/*.rs.bk
+
+# Contract output (local build: meta produces .wasm, .abi.json, etc.)
+**/output/
+/output-*/
+*.wasm
+*.abi.json
+*.imports.json
+*.mxsc.json
+*.source.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Wallet / secrets (local testing)
+*.pem
